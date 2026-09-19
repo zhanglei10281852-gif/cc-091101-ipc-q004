@@ -15,6 +15,8 @@ set(TEST_SOURCES
     test_message_queue.cpp
     test_signal.cpp
     test_socket.cpp
+    test_job_coordinator.cpp
+    ${CMAKE_SOURCE_DIR}/src/ipc/job_coordinator.cpp
 )
 
 # 测试可执行文件

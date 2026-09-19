@@ -55,6 +55,39 @@ make
 5. **信号 (Signal)** - 异步通知机制
 6. **Socket (Unix Domain Socket)** - 本地套接字通信
 
+以及在 System V 消息队列之上实现的 **离线任务协调器 (Job Coordinator)**：
+
+- 协调器/worker 两种运行模式，作业带唯一 job_id，收到完成确认才计成功
+- 租约超时重新投递；迟到确认与重复结果被识别且不会重复计入
+- 状态写入可恢复的本地日志，重启后重建 待处理/处理中/成功/死信 集合
+- 日志尾部半条记录自动忽略；达到重试上限进入死信，可查询、可显式重放
+- 同一状态目录只允许一个协调器；优雅关停时保存一致状态并删除消息队列
+
+### 任务协调器用法
+
+```bash
+cd backend/build && make
+
+# 准备作业文件：每行 "job_id payload"
+printf '1 alpha\n2 beta\n' > /tmp/jobs.txt
+
+# 启动协调器（受理作业、租约管理、崩溃后可重启恢复）
+./ipc_demo coordinator --state-dir /tmp/coord --input /tmp/jobs.txt \
+    --lease-ms 2000 --max-attempts 3 &
+
+# 启动 worker（可多个；--crash-on-job/--fail-on-job 用于故障演练）
+./ipc_demo worker --state-dir /tmp/coord --work-ms 100 &
+
+# 值守命令：状态计数 / 单作业尝试历史 / 重复提交 / 死信重放
+./ipc_demo status  --state-dir /tmp/coord
+./ipc_demo history --state-dir /tmp/coord --job 1
+./ipc_demo submit  --state-dir /tmp/coord --job 1 --payload alpha   # 已成功→直接返回原结果
+./ipc_demo replay  --state-dir /tmp/coord --all                     # 重放全部死信
+
+# 优雅关停：停止受理新作业，等待在途租约结算后保存状态并删除消息队列
+kill -TERM <coordinator_pid>
+```
+
 ---
 
 ## Docker 详细使用指南
@@ -132,7 +165,7 @@ docker system prune -f
 
 ## 测试用例说明
 
-项目包含 **41 个测试用例**，覆盖所有 IPC 方式：
+项目包含 **49 个测试用例**，覆盖所有 IPC 方式及任务协调器：
 
 ### Pipe (管道) - 5 个用例
 
@@ -205,6 +238,19 @@ docker system prune -f
 | socket_nonblocking       | 测试非阻塞 socket     |
 | socket_bidirectional     | 测试双向通信          |
 
+### Job Coordinator (任务协调器) - 8 个用例
+
+| 测试名                          | 说明                                                   |
+| ------------------------------- | ------------------------------------------------------ |
+| coord_log_recovery              | 日志恢复：忽略损坏尾部，在途作业重新排队               |
+| coord_basic_lifecycle           | 提交→派发→确认→成功；优雅关停删除队列并保存快照        |
+| coord_worker_killed_redelivery  | 杀死 worker 后租约过期重投，不丢单、不重复完成         |
+| coord_coordinator_restart       | 协调器崩溃重启后从日志恢复，worker 自动重连            |
+| coord_duplicate_submit          | 已成功的作业重复提交直接返回原结果，不重新执行         |
+| coord_dead_letter_replay        | 达到重试上限进入死信，可查询历史并显式重放成功         |
+| coord_second_instance_fails     | 同一状态目录的第二个协调器必须失败退出                 |
+| coord_late_and_duplicate_ack    | 迟到确认与重复结果被识别且不计入成功                   |
+
 ---
 
 ## 项目结构
@@ -218,16 +264,18 @@ docker system prune -f
     ├── Dockerfile          # Docker 构建文件
     ├── README.md           # 后端说明
     ├── src/
-    │   ├── main.cpp        # 主程序入口
+    │   ├── main.cpp        # 主程序入口（含协调器子命令）
     │   ├── include/
-    │   │   └── ipc_demo.h  # 头文件
+    │   │   ├── ipc_demo.h          # 头文件
+    │   │   └── job_coordinator.h   # 任务协调器接口
     │   └── ipc/
     │       ├── pipe_demo.cpp           # 管道演示
     │       ├── named_pipe_demo.cpp     # 命名管道演示
     │       ├── shared_memory_demo.cpp  # 共享内存演示
     │       ├── message_queue_demo.cpp  # 消息队列演示
     │       ├── signal_demo.cpp         # 信号演示
-    │       └── socket_demo.cpp         # Socket 演示
+    │       ├── socket_demo.cpp         # Socket 演示
+    │       └── job_coordinator.cpp     # 任务协调器（协调器/worker/CLI）
     └── tests/
         ├── CMakeLists.txt          # 测试构建配置
         ├── test_framework.h        # 测试框架
@@ -237,7 +285,8 @@ docker system prune -f
         ├── test_shared_memory.cpp  # 共享内存测试
         ├── test_message_queue.cpp  # 消息队列测试
         ├── test_signal.cpp         # 信号测试
-        └── test_socket.cpp         # Socket 测试
+        ├── test_socket.cpp         # Socket 测试
+        └── test_job_coordinator.cpp # 任务协调器测试
 ```
 
 ---

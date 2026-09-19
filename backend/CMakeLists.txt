@@ -17,6 +17,7 @@ set(SOURCES
     src/ipc/message_queue_demo.cpp
     src/ipc/signal_demo.cpp
     src/ipc/socket_demo.cpp
+    src/ipc/job_coordinator.cpp
 )
 
 # 可执行文件
@@ -34,5 +35,6 @@ install(TARGETS ipc_demo DESTINATION bin)
 # 添加测试子目录
 option(BUILD_TESTS "Build tests" ON)
 if(BUILD_TESTS)
+    enable_testing()
     add_subdirectory(tests)
 endif()
