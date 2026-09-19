@@ -11,6 +11,23 @@
  */
 
 #include "ipc_demo.h"
+#include "job_queue.h"
+
+void print_usage() {
+    std::cout << "用法:" << std::endl;
+    std::cout << "  ipc_demo                 交互式演示菜单" << std::endl;
+    std::cout << "  ipc_demo --all           运行所有 IPC 演示" << std::endl;
+    std::cout << std::endl;
+    std::cout << "离线任务队列（基于 System V 消息队列）:" << std::endl;
+    std::cout << "  ipc_demo coordinator --state-dir DIR [--input FILE] [--lease-ms N]" << std::endl;
+    std::cout << "                       [--max-attempts N] [--poll-ms N]" << std::endl;
+    std::cout << "  ipc_demo worker      --state-dir DIR [--name N] [--delay-ms N]" << std::endl;
+    std::cout << "                       [--crash-after N] [--exit-after N] [--send-duplicates]" << std::endl;
+    std::cout << "  ipc_demo submit      --state-dir DIR --job-id ID [--payload TEXT]" << std::endl;
+    std::cout << "  ipc_demo status      --state-dir DIR" << std::endl;
+    std::cout << "  ipc_demo history     --state-dir DIR --job-id ID" << std::endl;
+    std::cout << "  ipc_demo replay      --state-dir DIR (--job-id ID | --all)" << std::endl;
+}
 
 void print_menu() {
     std::cout << "\n\033[35m╔════════════════════════════════════════════╗\033[0m" << std::endl;
@@ -52,12 +69,26 @@ void run_all_demos() {
 }
 
 int main(int argc, char* argv[]) {
-    // 如果有命令行参数 --all，直接运行所有演示
-    if (argc > 1 && std::string(argv[1]) == "--all") {
-        run_all_demos();
-        return 0;
+    if (argc > 1) {
+        std::string cmd = argv[1];
+        // 如果有命令行参数 --all，直接运行所有演示
+        if (cmd == "--all") {
+            run_all_demos();
+            return 0;
+        }
+        // 离线任务队列：协调器 / worker / 管理命令
+        if (cmd == "coordinator") return ipc::jobq::run_coordinator(argc - 2, argv + 2);
+        if (cmd == "worker")      return ipc::jobq::run_worker(argc - 2, argv + 2);
+        if (cmd == "submit")      return ipc::jobq::run_submit_cmd(argc - 2, argv + 2);
+        if (cmd == "status")      return ipc::jobq::run_status_cmd(argc - 2, argv + 2);
+        if (cmd == "history")     return ipc::jobq::run_history_cmd(argc - 2, argv + 2);
+        if (cmd == "replay")      return ipc::jobq::run_replay_cmd(argc - 2, argv + 2);
+        if (cmd == "--help" || cmd == "-h") {
+            print_usage();
+            return 0;
+        }
     }
-    
+
     int choice;
     
     while (true) {

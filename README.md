@@ -55,6 +55,62 @@ make
 5. **信号 (Signal)** - 异步通知机制
 6. **Socket (Unix Domain Socket)** - 本地套接字通信
 
+另外在消息队列之上实现了一个 **离线任务队列**（协调器 / Worker 模式），见下文。
+
+---
+
+## 离线任务队列（协调器 / Worker）
+
+在 System V 消息队列之上实现的可靠作业分发，面向"多个工作进程领取离线分析任务、
+偶发崩溃也不能丢单或重复写结果"的场景：
+
+- **确认才算成功**：作业只有收到对应租约 token 的完成确认才计入成功
+- **租约与重投递**：超过租约未确认的作业自动重新投递
+- **迟到 / 重复识别**：同一 job_id 的迟到确认与重复结果会被识别且**不重复计入**；
+  重复提交已成功作业时直接返回原结果
+- **可恢复状态**：所有状态变更追加写入本地日志（`<state-dir>/jobs.log`，
+  带 CRC 的帧 + fsync），进程重启后重建待处理 / 处理中 / 成功 / 死信四个集合；
+  日志尾部只有半条记录时忽略损坏尾部继续恢复
+- **死信与重放**：达到重试上限的作业进入死信，可查询并显式重放
+- **单实例**：两个协调器指向同一状态目录时，后启动者失败退出
+- **优雅关停**：停止接收新作业，等待当前租约结算后保存一致状态，
+  并删除自己创建的消息队列
+
+### 运行方式
+
+```bash
+# 启动协调器（受理输入文件中的作业，格式：每行 "job_id payload"）
+./ipc_demo coordinator --state-dir /tmp/jobs --input jobs.txt \
+    --lease-ms 2000 --max-attempts 3
+
+# 启动一个或多个 worker（可反复启停）
+./ipc_demo worker --state-dir /tmp/jobs --name w1
+
+# 管理命令
+./ipc_demo submit  --state-dir /tmp/jobs --job-id job-7 --payload "scan /data/x"
+./ipc_demo status  --state-dir /tmp/jobs           # 各状态数量与异常计数
+./ipc_demo history --state-dir /tmp/jobs --job-id job-7   # 单作业尝试历史
+./ipc_demo replay  --state-dir /tmp/jobs --job-id job-7   # 重放死信（在线/离线均可）
+./ipc_demo replay  --state-dir /tmp/jobs --all
+```
+
+状态目录内容：
+
+| 文件 | 说明 |
+| ---- | ---- |
+| `jobs.log` | 追加式状态日志（恢复的唯一权威来源） |
+| `results.log` | 成功作业结果，每个 job_id 恰好一行 |
+| `coordinator.lock` | 单实例锁（flock） |
+| `queue.key` | 消息队列 key 的锚点文件 |
+
+### worker 测试钩子
+
+`--crash-after N`（收到第 N+1 个任务后不确认直接崩溃）、`--delay-ms N`
+（模拟慢任务触发迟到确认）、`--send-duplicates`（重复发送确认）、
+`--exit-after N`（处理 N 个任务后退出），用于演练故障场景。
+
+---
+
 ---
 
 ## Docker 详细使用指南
@@ -95,7 +151,23 @@ docker-compose run --rm ipc-demo test
 docker run --rm --privileged -v /tmp:/tmp --ipc=host ipc-demo test
 ```
 
-### 4. 交互模式
+### 4. 运行离线任务队列
+
+```bash
+# 协调器（状态目录挂到宿主机以便重启恢复）
+docker run --rm --privileged -v /tmp:/tmp --ipc=host ipc-demo \
+    coordinator --state-dir /tmp/jobs --input /tmp/jobs.txt
+
+# worker（可启动多个）
+docker run --rm --privileged -v /tmp:/tmp --ipc=host ipc-demo \
+    worker --state-dir /tmp/jobs
+
+# 管理命令
+docker run --rm --privileged -v /tmp:/tmp --ipc=host ipc-demo \
+    status --state-dir /tmp/jobs
+```
+
+### 5. 交互模式
 
 ```bash
 # 进入交互式菜单
@@ -105,7 +177,7 @@ docker-compose run --rm ipc-demo interactive
 docker run -it --rm --privileged -v /tmp:/tmp --ipc=host ipc-demo /bin/bash
 ```
 
-### 5. 查看日志
+### 6. 查看日志
 
 ```bash
 # 查看容器日志
@@ -115,7 +187,7 @@ docker-compose logs ipc-demo
 docker-compose logs -f ipc-demo
 ```
 
-### 6. 清理资源
+### 7. 清理资源
 
 ```bash
 # 停止并删除容器
@@ -132,7 +204,7 @@ docker system prune -f
 
 ## 测试用例说明
 
-项目包含 **41 个测试用例**，覆盖所有 IPC 方式：
+项目包含 **58 个测试用例**，覆盖所有 IPC 方式及离线任务队列：
 
 ### Pipe (管道) - 5 个用例
 
@@ -205,6 +277,28 @@ docker system prune -f
 | socket_nonblocking       | 测试非阻塞 socket     |
 | socket_bidirectional     | 测试双向通信          |
 
+### Job Queue (离线任务队列) - 17 个用例
+
+| 测试名                       | 说明                                             |
+| ---------------------------- | ------------------------------------------------ |
+| jobq_store_basic             | 状态机基本流程：提交/派发/确认                   |
+| jobq_store_duplicate_submit  | 重复提交不重复受理，已成功作业保留原结果         |
+| jobq_store_late_and_dup_ack  | 迟到确认与重复结果被识别且不计入                 |
+| jobq_store_dead_letter       | 达到重试上限进入死信                             |
+| jobq_store_replay            | 死信重放后重新入队并可成功                       |
+| jobq_store_recovery          | 重启后重建待处理/处理中/成功/死信集合            |
+| jobq_store_corrupt_tail      | 日志尾部半条记录被忽略并截断，可继续恢复         |
+| jobq_single_coordinator      | 同一状态目录第二个协调器失败退出                 |
+| jobq_end_to_end              | 多 worker 并行，全部作业恰好完成一次             |
+| jobq_worker_crash            | 杀死 worker 后租约过期重投递，不丢单             |
+| jobq_coordinator_restart     | kill -9 协调器后重启恢复，不丢单不重复完成       |
+| jobq_duplicate_submission    | CLI/输入文件重复提交不重复计入，直接返回原结果   |
+| jobq_late_ack                | 慢 worker 的迟到确认被识别，重投递恰好成功一次   |
+| jobq_duplicate_result        | worker 重复发送确认被识别，不重复计入            |
+| jobq_dead_letter_replay      | 无 worker 时进入死信，在线重放后完成             |
+| jobq_offline_replay          | 协调器停止时离线重放死信                         |
+| jobq_shutdown_drain          | 关停时拒绝新作业、等待租约结算并删除消息队列     |
+
 ---
 
 ## 项目结构
@@ -218,7 +312,7 @@ docker system prune -f
     ├── Dockerfile          # Docker 构建文件
     ├── README.md           # 后端说明
     ├── src/
-    │   ├── main.cpp        # 主程序入口
+    │   ├── main.cpp        # 主程序入口（演示菜单 + 任务队列子命令）
     │   ├── include/
     │   │   └── ipc_demo.h  # 头文件
     │   └── ipc/
@@ -227,7 +321,10 @@ docker system prune -f
     │       ├── shared_memory_demo.cpp  # 共享内存演示
     │       ├── message_queue_demo.cpp  # 消息队列演示
     │       ├── signal_demo.cpp         # 信号演示
-    │       └── socket_demo.cpp         # Socket 演示
+    │       ├── socket_demo.cpp         # Socket 演示
+    │       ├── job_queue.h             # 任务队列协议与可恢复状态存储
+    │       ├── job_queue.cpp           # 状态存储与日志恢复实现
+    │       └── job_runner.cpp          # 协调器 / worker / 管理命令
     └── tests/
         ├── CMakeLists.txt          # 测试构建配置
         ├── test_framework.h        # 测试框架
@@ -237,7 +334,8 @@ docker system prune -f
         ├── test_shared_memory.cpp  # 共享内存测试
         ├── test_message_queue.cpp  # 消息队列测试
         ├── test_signal.cpp         # 信号测试
-        └── test_socket.cpp         # Socket 测试
+        ├── test_socket.cpp         # Socket 测试
+        └── test_job_queue.cpp      # 任务队列测试（含多进程集成场景）
 ```
 
 ---

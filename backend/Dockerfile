@@ -45,11 +45,20 @@ case "$1" in\n\
   interactive)\n\
     ./ipc_demo\n\
     ;;\n\
+  coordinator|worker|submit|status|history|replay)\n\
+    exec ./ipc_demo "$@"\n\
+    ;;\n\
   *)\n\
-    echo "Usage: docker run <image> [test|demo|interactive]"\n\
+    echo "Usage: docker run <image> [test|demo|interactive|coordinator|worker|submit|status|history|replay]"\n\
     echo "  test        - Run all test cases"\n\
     echo "  demo        - Run all IPC demonstrations"\n\
     echo "  interactive - Interactive menu mode"\n\
+    echo "  coordinator - Run job queue coordinator (needs --state-dir)"\n\
+    echo "  worker      - Run job queue worker (needs --state-dir)"\n\
+    echo "  submit      - Submit a job to a running coordinator"\n\
+    echo "  status      - Show job counts per state"\n\
+    echo "  history     - Show attempt history of one job"\n\
+    echo "  replay      - Replay dead-letter jobs"\n\
     echo ""\n\
     echo "Running demo by default..."\n\
     ./ipc_demo --all\n\

@@ -17,13 +17,18 @@ set(SOURCES
     src/ipc/message_queue_demo.cpp
     src/ipc/signal_demo.cpp
     src/ipc/socket_demo.cpp
+    src/ipc/job_queue.cpp
+    src/ipc/job_runner.cpp
 )
 
 # 可执行文件
 add_executable(ipc_demo ${SOURCES})
 
 # 包含目录
-target_include_directories(ipc_demo PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
+target_include_directories(ipc_demo PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/include
+    ${CMAKE_SOURCE_DIR}/src/ipc
+)
 
 # 链接库
 target_link_libraries(ipc_demo PRIVATE Threads::Threads rt)

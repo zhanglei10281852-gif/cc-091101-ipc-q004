@@ -15,14 +15,21 @@ set(TEST_SOURCES
     test_message_queue.cpp
     test_signal.cpp
     test_socket.cpp
+    test_job_queue.cpp
+    ${CMAKE_SOURCE_DIR}/src/ipc/job_queue.cpp
 )
 
 # 测试可执行文件
 add_executable(ipc_tests ${TEST_SOURCES})
 
+# 集成测试需要拉起 ipc_demo 进程
+add_dependencies(ipc_tests ipc_demo)
+target_compile_definitions(ipc_tests PRIVATE IPC_DEMO_BIN="$<TARGET_FILE:ipc_demo>")
+
 # 包含目录
-target_include_directories(ipc_tests PRIVATE 
+target_include_directories(ipc_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/include
+    ${CMAKE_SOURCE_DIR}/src/ipc
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
